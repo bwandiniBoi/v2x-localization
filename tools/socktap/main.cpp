@@ -4,6 +4,7 @@
 #include "hello_application.hpp"
 #include "monitor_application.hpp"
 #include "rsu_application.hpp"
+#include "rsu_receiver_application.hpp"
 #include "vehicle_localizer_application.hpp"
 #include "link_layer.hpp"
 #include "positioning.hpp"
@@ -43,7 +44,10 @@ int main(int argc, const char** argv)
         ("print-rx-cam", "Print received CAMs")
         ("print-tx-cam", "Print generated CAMs")
         ("benchmark", "Enable benchmarking")
-        ("applications,a", po::value<std::vector<std::string>>()->default_value({"ca"}, "ca")->multitoken(), "Run applications [ca,hello,benchmark,monitor,rsu,localizer]")
+        ("rsu-id", po::value<unsigned>()->default_value(1), "RSU identifier (1, 2 or 3) — used in rsu-rx mode")
+        ("laptop-ip", po::value<std::string>()->default_value("192.168.1.100"), "Laptop IP address for rsu-rx UDP stream")
+        ("laptop-port", po::value<unsigned>()->default_value(5005), "UDP port on laptop for rsu-rx stream")
+        ("applications,a", po::value<std::vector<std::string>>()->default_value({"ca"}, "ca")->multitoken(), "Run applications [ca,hello,benchmark,monitor,rsu,rsu-rx,localizer]")
         ("non-strict", "Set MIB parameter ItsGnSnDecapResultHandling to NON_STRICT")
     ;
     add_positioning_options(options);
@@ -185,6 +189,16 @@ int main(int argc, const char** argv)
                 }
                 rsu->print_generated_message(vm.count("print-tx-cam") > 0);
                 apps.emplace(app_name, std::move(rsu));
+            } else if (app_name == "rsu-rx") {
+                // New-architecture RSU: receives OBU CAMs, measures RSSI,
+                // forwards JSON measurements to laptop over UDP.
+                uint32_t rsu_id     = static_cast<uint32_t>(vm["rsu-id"].as<unsigned>());
+                std::string lap_ip  = vm["laptop-ip"].as<std::string>();
+                uint16_t lap_port   = static_cast<uint16_t>(vm["laptop-port"].as<unsigned>());
+                std::unique_ptr<RsuReceiverApplication> rsu_rx {
+                    new RsuReceiverApplication(*positioning, io_context, rsu_id, lap_ip, lap_port)
+                };
+                apps.emplace(app_name, std::move(rsu_rx));
             } else if (app_name == "localizer") {
                 std::unique_ptr<VehicleLocalizerApplication> localizer {
                     new VehicleLocalizerApplication(*positioning, trigger.runtime(), io_context)

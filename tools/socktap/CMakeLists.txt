@@ -24,6 +24,7 @@ add_executable(socktap
     udp_link.cpp
     monitor_application.cpp
     rsu_application.cpp
+    rsu_receiver_application.cpp
     vehicle_localizer_application.cpp
 
 )
