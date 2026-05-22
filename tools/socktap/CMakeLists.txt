@@ -4,6 +4,7 @@ if(NOT TARGET Boost::program_options)
 endif()
 
 find_package(Threads REQUIRED)
+find_package(Eigen3 REQUIRED)  # ADD THIS LINE
 
 add_executable(socktap
     application.cpp
@@ -21,6 +22,10 @@ add_executable(socktap
     tcp_link.cpp
     time_trigger.cpp
     udp_link.cpp
+    monitor_application.cpp
+    rsu_application.cpp
+    vehicle_localizer_application.cpp
+
 )
 
 if (TARGET rpc)
@@ -57,16 +62,16 @@ if (SOCKTAP_WITH_AUTOTALKS)
     target_compile_definitions(socktap PUBLIC "SOCKTAP_WITH_AUTOTALKS")
     if(NOT AUTOTALKS_CRATON)
         target_compile_definitions(socktap PUBLIC "SECTON")
-        target_link_libraries(socktap PUBLIC Boost::program_options Threads::Threads vanetza Autotalks::AtlkRemote)
+        target_link_libraries(socktap PUBLIC Boost::program_options Threads::Threads vanetza Autotalks::AtlkRemote Eigen3::Eigen)
     else ()
         target_compile_definitions(socktap PUBLIC "CRATON_2")
-        target_link_libraries(socktap PUBLIC Boost::program_options Threads::Threads vanetza Autotalks::AtlkLocal)
+        target_link_libraries(socktap PUBLIC Boost::program_options Threads::Threads vanetza Autotalks::AtlkLocal Eigen3::Eigen)
 
     endif()
     target_include_directories(socktap PUBLIC ${AUTOTALKS_INCLUDE_DIRS})
     target_sources(socktap PRIVATE autotalks.cpp autotalks_link.cpp)
 else()
-    target_link_libraries(socktap PUBLIC Boost::program_options Threads::Threads vanetza)
+    target_link_libraries(socktap PUBLIC Boost::program_options Threads::Threads vanetza Eigen3::Eigen)
 endif()
 
 install(TARGETS socktap EXPORT ${PROJECT_NAME} DESTINATION ${CMAKE_INSTALL_BINDIR})

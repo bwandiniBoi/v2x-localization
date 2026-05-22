@@ -2,6 +2,9 @@
 #include "benchmark_application.hpp"
 #include "cam_application.hpp"
 #include "hello_application.hpp"
+#include "monitor_application.hpp"
+#include "rsu_application.hpp"
+#include "vehicle_localizer_application.hpp"
 #include "link_layer.hpp"
 #include "positioning.hpp"
 #include "router_context.hpp"
@@ -36,10 +39,11 @@ int main(int argc, const char** argv)
         ("require-gnss-fix", "Suppress transmissions while GNSS position fix is missing")
         ("gn-version", po::value<unsigned>()->default_value(1), "GeoNetworking protocol version to use.")
         ("cam-interval", po::value<unsigned>()->default_value(1000), "CAM sending interval in milliseconds.")
+        ("beacon-interval", po::value<unsigned>()->default_value(1000), "RSU beacon interval in milliseconds.")
         ("print-rx-cam", "Print received CAMs")
         ("print-tx-cam", "Print generated CAMs")
         ("benchmark", "Enable benchmarking")
-        ("applications,a", po::value<std::vector<std::string>>()->default_value({"ca"}, "ca")->multitoken(), "Run applications [ca,hello,benchmark]")
+        ("applications,a", po::value<std::vector<std::string>>()->default_value({"ca"}, "ca")->multitoken(), "Run applications [ca,hello,benchmark,monitor,rsu,localizer]")
         ("non-strict", "Set MIB parameter ItsGnSnDecapResultHandling to NON_STRICT")
     ;
     add_positioning_options(options);
@@ -113,7 +117,6 @@ int main(int argc, const char** argv)
         signals.async_wait(signal_handler);
 
         // configure management information base
-        // TODO: make more MIB options configurable by command line flags
         gn::MIB mib;
         mib.itsGnLocalGnAddr.mid(mac_address);
         mib.itsGnLocalGnAddr.is_manually_configured(true);
@@ -168,6 +171,25 @@ int main(int argc, const char** argv)
                     new BenchmarkApplication(io_context)
                 };
                 apps.emplace(app_name, std::move(benchmark));
+            } else if (app_name == "monitor") {
+                std::unique_ptr<MonitorApplication> monitor {
+                    new MonitorApplication(io_context)
+                };
+                apps.emplace(app_name, std::move(monitor));
+            } else if (app_name == "rsu") {
+                std::unique_ptr<RsuApplication> rsu {
+                    new RsuApplication(*positioning, trigger.runtime())
+                };
+                if (vm.count("beacon-interval")) {
+                    rsu->set_interval(std::chrono::milliseconds(vm["beacon-interval"].as<unsigned>()));
+                }
+                rsu->print_generated_message(vm.count("print-tx-cam") > 0);
+                apps.emplace(app_name, std::move(rsu));
+            } else if (app_name == "localizer") {
+                std::unique_ptr<VehicleLocalizerApplication> localizer {
+                    new VehicleLocalizerApplication(*positioning, trigger.runtime(), io_context)
+                };
+                apps.emplace(app_name, std::move(localizer));
             } else {
                 std::cerr << "skip unknown application '" << app_name << "'\n";
             }

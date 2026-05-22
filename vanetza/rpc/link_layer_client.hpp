@@ -46,6 +46,7 @@ public:
         vanetza::MacAddress destination;
         vanetza::CohesivePacket packet;
         Technology technology = Technology::Unspecified;
+        boost::optional<int16_t> rssi_dbm8;  // RSSI in dBm * 8
     };
 
     struct Identity

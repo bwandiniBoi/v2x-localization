@@ -3,6 +3,8 @@
 #include "vanetza/rpc/logger.hpp"
 #include <vanetza/access/ethertype.hpp>
 #include <iostream>
+#include "rssi_cache.hpp"
+
 
 namespace {
 
@@ -75,6 +77,25 @@ void RpcLinkLayer::indicate(IndicationCallback callback)
                 eth_hdr.destination = indication.destination;
                 eth_hdr.source = indication.source;
                 eth_hdr.type = vanetza::access::ethertype::GeoNetworking;
+                
+                // *** RSSI IS AVAILABLE HERE! ***
+                // Print it so we can see it's working
+
+                if (indication.rssi_dbm8) {
+                    int16_t rssi_dbm = indication.rssi_dbm8.get() / 8;
+                    uint32_t l2id = 0;
+                    
+                    RSSICache::instance().store(indication.source, rssi_dbm, l2id);
+                    
+                    std::cout << "[RPC-LINK] Stored RSSI: " << rssi_dbm << " dBm from "
+                              << indication.source << " (L2ID: 0x" << std::hex << l2id << std::dec << ")"
+                              << std::endl;
+                } else {
+                    std::cout << "[RPC-LINK] Received packet from " << indication.source
+                              << " (no RSSI)" << std::endl;
+
+                }
+                
                 callback(std::move(indication.packet), eth_hdr);
             });
         };

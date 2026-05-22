@@ -51,13 +51,22 @@ public:
         LinkLayerClient::Indication indication { std::move(payload) };
         assign(indication.source, frame.getSourceAddress());
         assign(indication.destination, frame.getDestinationAddress());
+        
+        // Extract technology and RSSI from RX parameters
         if (context.getParams().hasRxParams()) {
-            if (context.getParams().getRxParams().isWlan()) {
+            auto rxParams = context.getParams().getRxParams();
+            
+            if (rxParams.isWlan()) {
                 indication.technology = LinkLayerClient::Technology::ITS_G5;
-            } else if (context.getParams().getRxParams().isCv2x()) {
-                indication.technology = LinkLayerClient::Technology::LTE_V2X;  
+            } else if (rxParams.isCv2x()) {
+                indication.technology = LinkLayerClient::Technology::LTE_V2X;
+                
+                // Extract RSSI from CV2X parameters
+                auto cv2xParams = rxParams.getCv2x();
+                indication.rssi_dbm8 = cv2xParams.getRssi();
             }
         }
+        
         callback_(std::move(indication));
         return kj::READY_NOW;
     }
@@ -199,44 +208,56 @@ void LinkLayerClient::request(const access::DataRequest& request, std::unique_pt
     auto frame = tx_data.initFrame();
     frame.setSourceAddress(kj::ArrayPtr<const kj::byte> { request.source_addr.octets.data(), request.source_addr.octets.size() });
     frame.setDestinationAddress(kj::ArrayPtr<const kj::byte> { request.destination_addr.octets.data(), request.destination_addr.octets.size() });
-    auto payload_view = create_byte_view(*packet, OsiLayer::Network, OsiLayer::Application);
-    vanetza::ByteBuffer payload { payload_view.begin(), payload_view.end() };
-    frame.setPayload(kj::ArrayPtr<const kj::byte> { payload.data(), payload.size() });
 
     auto tx_params = tx_data.initTxParams();
-    if (technology_ == Technology::ITS_G5) {
-        auto wlan_tx_params = tx_params.initWlan();
-        wlan_tx_params.setPriority(access::user_priority(request.access_category));
-    } else if (technology_ == Technology::LTE_V2X) {
-        auto cv2x_tx_params = tx_params.initCv2x();
-        cv2x_tx_params.setPriority(access::pppp_from_ac(request.access_category));
+    if (technology_ == Technology::ITS_G5)
+    {
+        auto wlan = tx_params.initWlan();
+        wlan.setPriority(static_cast<uint8_t>(request.access_category));
+    }
+    else if (technology_ == Technology::LTE_V2X)
+    {
+        auto cv2x = tx_params.initCv2x();
+        cv2x.setPriority(static_cast<uint8_t>(request.access_category));
     }
 
-    auto promise = tx_data.send().then([this](capnp::Response<vanetza::rpc::LinkLayer::TransmitDataResults>&& results) -> kj::Promise<void> {
-        if (results.getError() != vanetza::rpc::LinkLayer::ErrorCode::OK) {
-            VANETZA_RPC_LOG_ERROR(context_->logger_, "LinkLayerClient/request", stringify(map_error_code(results.getError())));
-        } else {
-            VANETZA_RPC_LOG_DEBUG(context_->logger_, "LinkLayerClient/request", "ok");
+    std::vector<vanetza::ByteBuffer> buffers;
+    for (auto layer : osi_layer_range<OsiLayer::Network, OsiLayer::Application>())
+    {
+        ByteBuffer buffer;
+        packet->layer(layer).convert(buffer);
+        buffers.push_back(std::move(buffer));
+    }
+
+    std::size_t total_length = 0;
+    for (auto& buffer : buffers)
+    {
+        total_length += buffer.size();
+    }
+    vanetza::ByteBuffer payload;
+    payload.reserve(total_length);
+    for (auto& buffer : buffers)
+    {
+        payload.insert(payload.end(), buffer.begin(), buffer.end());
+    }
+    frame.setPayload(kj::ArrayPtr<const kj::byte> { payload.data(), payload.size() });
+
+    auto promise = tx_data.send().then([](capnp::Response<rpc::LinkLayer::TransmitDataResults>&& results) mutable {
+        auto error = map_error_code(results.getError());
+        if (error != ErrorCode::Ok)
+        {
+            // TODO: log error message
         }
-        return kj::READY_NOW;
     });
-    context_->addTask(kj::mv(promise), 100 * kj::MILLISECONDS);
+    context_->task_set_.add(kj::mv(promise));
 }
 
 void LinkLayerClient::do_indicate(Indication indication)
 {
-    VANETZA_RPC_LOG_DEBUG(context_->logger_, "LinkLayerClient/indicate", stringify(indication.technology))
     std::lock_guard<std::mutex> lock(callback_mutex_);
-    if (indication_callback_) {
-        indication_callback_(indication);
-    }
-}
-
-void LinkLayerClient::do_report(dcc::ChannelLoad cl)
-{
-    std::lock_guard<std::mutex> lock(callback_mutex_);
-    if (cbr_callback_) {
-        cbr_callback_(cl);
+    if (indication_callback_)
+    {
+        indication_callback_(std::move(indication));
     }
 }
 
@@ -246,52 +267,59 @@ void LinkLayerClient::indicate(IndicationCallback callback)
     indication_callback_ = callback;
 }
 
+void LinkLayerClient::do_report(dcc::ChannelLoad load)
+{
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    if (cbr_callback_)
+    {
+        cbr_callback_(load);
+    }
+}
+
 void LinkLayerClient::report_channel_load(ChannelLoadReportCallback callback)
 {
     std::lock_guard<std::mutex> lock(callback_mutex_);
     cbr_callback_ = callback;
 }
 
-kj::Promise<LinkLayerClient::ErrorCode> LinkLayerClient::set_source_address(const MacAddress& addr)
+kj::Promise<LinkLayerClient::ErrorCode> LinkLayerClient::set_source_address(const MacAddress& address)
 {
     auto request = context_->link_layer_.setSourceAddressRequest();
-    auto msg_addr = request.initAddress(MacAddress::length_bytes);
-    std::copy(addr.octets.begin(), addr.octets.end(), msg_addr.begin());
-
-    using Response = capnp::Response<vanetza::rpc::LinkLayer::SetSourceAddressResults>;
-    kj::ForkedPromise<ErrorCode> forked = request.send().then([this](Response&& response) -> kj::Promise<ErrorCode> {
-        auto result = map_error_code(response.getError());
-        VANETZA_RPC_LOG_DEBUG(context_->logger_, "LinkLayerClient/SetSourceAddress", stringify(result));
-        return result;
-    }).fork();
-    context_->addTask(forked.addBranch().ignoreResult(), 500 * kj::MILLISECONDS);
-    return forked.addBranch();
+    request.setAddress(kj::ArrayPtr<const kj::byte> { address.octets.data(), address.octets.size() });
+    return request.send().then([](capnp::Response<rpc::LinkLayer::SetSourceAddressResults>&& results) {
+        return map_error_code(results.getError());
+    });
 }
 
-const char* stringify(LinkLayerClient::ErrorCode ec)
+const char* stringify(LinkLayerClient::ErrorCode code)
 {
-    using ErrorCode = LinkLayerClient::ErrorCode;
-    static const std::array<const char*, 4> strings = { "ok", "invalid argument", "unsupported", "internal error" };
-    static_assert(static_cast<std::size_t>(ErrorCode::Ok) == 0, "ErrorCode 'ok' is at index 0");
-    const auto idx = static_cast<std::size_t>(ec);
-    if (idx < 0 || idx >= strings.size()) {
-        return "unknown";
-    } else {
-        return strings[idx]; 
+    switch (code)
+    {
+        case LinkLayerClient::ErrorCode::Ok:
+            return "Ok";
+        case LinkLayerClient::ErrorCode::InvalidArgument:
+            return "InvalidArgument";
+        case LinkLayerClient::ErrorCode::Unsupported:
+            return "Unsupported";
+        case LinkLayerClient::ErrorCode::InternalError:
+            return "InternalError";
+        default:
+            return "Unknown";
     }
 }
 
-const char* stringify(LinkLayerClient::Technology tech)
+const char* stringify(LinkLayerClient::Technology technology)
 {
-    using Tech = LinkLayerClient::Technology;
-    if (tech == Tech::ITS_G5) {
-        return "ITS-G5";
-    } else if (tech == Tech::LTE_V2X) {
-        return "LTE-V2X";
-    } else if (tech == Tech::Unspecified) {
-        return "unspecified";
-    } else {
-        return "unknown";
+    switch (technology)
+    {
+        case LinkLayerClient::Technology::Unspecified:
+            return "Unspecified";
+        case LinkLayerClient::Technology::ITS_G5:
+            return "ITS-G5";
+        case LinkLayerClient::Technology::LTE_V2X:
+            return "LTE-V2X";
+        default:
+            return "Unknown";
     }
 }
 

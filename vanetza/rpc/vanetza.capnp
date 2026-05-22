@@ -25,6 +25,7 @@ interface LinkLayer
         # Parameters for C-V2X devices (LTE-V2X and 5G-V2X)
         priority @0 :UInt8;     # PPPP (0-7)
         power @1 :Int16;        # dBm scaled by 8
+        rssi @2 :Int16;         # RSSI in dBm scaled by 8 (NEW FIELD!)
     }
 
     struct TxParameters
